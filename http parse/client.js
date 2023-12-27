@@ -1,5 +1,5 @@
-const net = require("node:net");
-const { resolve } = require("node:path");
+import net from "node:net";
+import { resolve } from "node:path";
 import { parseHTML } from "../html parse/parser";
 
 class Request {
@@ -18,21 +18,23 @@ class Request {
     // content-type的不同影响body格式
     // 常见（4-5种中的）2种内容格式的编码方式
     if (this.headers["Content-Type"] === "application/json") {
+      // 直接序列化内容
       this.bodyText = JSON.stringify(this.body);
     } else if (
       // 表单格式的前身，kv以=分割，多个kv以&分割
       this.headers["Content-Type"] === "application/x-www-form-urlencoded"
     ) {
+      // 把body内的数据拼接为常见的url查询字符串格式
       this.bodyText = Object.keys(this.body)
-        .map((key) => `${key} = ${encodeURIComponent(this.body[key])}`)
+        .map((key) => `${key}=${encodeURIComponent(this.body[key])}`)
         .join("&");
     }
-
+    // 获取body长度
     this.headers["Content-Length"] = this.bodyText.length;
   }
 
   send(connection) {
-    // 在request构造器种收集必要信息
+    // 在request构造器中收集必要信息
     // 设计send函数把请求发到服务器
     // send函数需要是异步的，所以应该返回promise
 
@@ -119,16 +121,21 @@ class ResponseParse {
     }
   }
   receiveChar(char) {
+    // 如果处于等待接收状态行阶段，如果遇到回车（本行）则切换状态到等待状态行结束。不然则将读取的内容正常拼接进状态行中
     if (this.current === this.WAITING_STATUS_LINE) {
       if (char === "\r") {
         this.current = this.WAITING_STATUS_LINE_END;
       } else {
         this.statusLine += char;
       }
+      // 如果在等待状态行结束阶段，又遇到换行符，则说明彻底读完状态行，进入等待报文头部状态
     } else if (this.current === this.WAITING_STATUS_LINE_END) {
       if (char === "\n") {
         this.current = this.WAITING_HEADER_NAME;
       }
+      // 在等待报文头部阶段，如果遇到连接kv的:符号，则说明读到http报文头部属性名了，改变状态为等待头部空格
+      // 如果遇到回车符，则说明整个头部block结束了，状态改为等待头部block结束，不过这里还需要考虑编码问题。
+      // 如果前面的编码方法为chunked，就需要在bodyparser变量中初始化一个新的解析器trunkedbodyparser
     } else if (this.current === this.WAITING_HEADER_NAME) {
       if (char === ":") {
         this.current = this.WAITING_HEADER_SPACE;
@@ -139,27 +146,35 @@ class ResponseParse {
           this.bodyParser = new TrunkedBodyParser();
         }
       }
+      // 如果在等待头部空格阶段，又读到空字符，说明正式进入等待头部值状态
     } else if (this.current === this.WAITING_HEADER_SPACE) {
       if (char === " ") {
         this.current = this.WAITING_HEADER_VALUE;
       }
+      // 如果在等待状态值阶段，读到回车符说明本条头部结束，状态更改为等待头部行结束
+      // 同时将读取到的头部值设置到解析器的头部变量中
+      // 然后置空头部名和头部值，等待后续传入新头部
     } else if (this.current === this.WAITING_HEADER_VALUE) {
       if (char === "\r") {
         this.current = this.WAITING_HEADER_LINE_END;
         this.headers[this.headerName] = this.headerValue;
         this.headerName = "";
         this.headerValue = "";
+        // 如果没读到回车符，你就乖乖往头部值里拼接
       } else {
         this.headerValue += char;
       }
+      // 如果在等待头部行结束阶段，如果读到换行符，则说明又要重读新行，则转为等待头部值阶段
     } else if (this.current === this.WAITING_HEADER_LINE_END) {
       if (char === "\n") {
         this.current = this.WAITING_HEADER_NAME;
       }
+      //如果在等待头部block结束阶段，读到换行符，则说明应该读报文body部分
     } else if (this.current === this.WAITING_HEADER_BLOCK_END) {
       if (char === "\n") {
         this.current = this.WAITING_BODY;
       }
+      // 在等待报文body阶段，则可以将读取的内容交给内部的bodyparser调用receiveChar处理
     } else if (this.current === this.WAITING_BODY) {
       this.bodyParser.receiveChar(char);
     }
